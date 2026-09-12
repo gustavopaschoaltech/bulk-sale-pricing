@@ -26,10 +26,17 @@
 
 ## Compatibility
 
-- Develop with current supported WordPress, WooCommerce, and PHP versions in mind.
+- The project's minimum compatibility baseline is:
+  - WordPress 6.9+
+  - WooCommerce 10.8+
+  - PHP 8.1+
+- Use this baseline when making architectural and implementation decisions.
+- The local development environment does not define the project's compatibility requirements.
+- Use only public WordPress and WooCommerce APIs. Never use WooCommerce internal or `@internal` APIs.
 - Consider High-Performance Order Storage (HPOS) and relevant current WooCommerce functionality whenever changes could affect them.
 - Do not state a compatibility claim without documented, successful testing for that exact claim.
 - Reassess compatibility and update documented test results when changes can affect supported WordPress, WooCommerce, PHP, or HPOS behavior.
+- Plugin metadata must remain consistent with this compatibility baseline. When the baseline changes, update the relevant plugin metadata in the same change.
 
 ## Workflow and change discipline
 
