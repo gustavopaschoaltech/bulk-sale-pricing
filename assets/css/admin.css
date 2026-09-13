@@ -1,0 +1,27 @@
+.bsp-inline-action {
+	display: inline;
+	margin-left: 0.5em;
+}
+
+.bsp-inline-action .button-link {
+	vertical-align: baseline;
+}
+
+.bsp-deleted-term {
+	font-style: italic;
+}
+
+.bsp-rules-table td {
+	vertical-align: top;
+}
+
+.bsp-rule-id-column {
+	width: 72px;
+	white-space: nowrap;
+}
+
+.bsp-rule-form-wrap .wc-enhanced-select,
+.bsp-rule-form-wrap .select2-container {
+	max-width: 420px;
+	width: 100% !important;
+}
