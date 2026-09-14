@@ -39,8 +39,11 @@ final class BSP_Plugin {
 	 */
 	public function register_hooks() {
 		( new BSP_Discount_Rule_Post_Type() )->register_hooks();
+		( new BSP_Discount_Rule_Migration() )->register_hooks();
+		( new BSP_Product_Synchronizer() )->register_hooks();
 
 		if ( is_admin() ) {
+			( new BSP_Product_History() )->register_admin_hooks();
 			( new BSP_Discount_Rule_Admin() )->register_hooks();
 		}
 	}

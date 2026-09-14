@@ -42,11 +42,35 @@ class BSP_Discount_Rule_Admin {
 	private $terms;
 
 	/**
+	 * Activation workflow.
+	 *
+	 * @var BSP_Rule_Activation
+	 */
+	private $activation;
+
+	/**
+	 * Deactivation cleanup.
+	 *
+	 * @var BSP_Rule_Deactivation
+	 */
+	private $deactivation;
+
+	/**
+	 * Live product synchronization.
+	 *
+	 * @var BSP_Product_Synchronizer
+	 */
+	private $synchronizer;
+
+	/**
 	 * Initializes dependencies.
 	 */
 	public function __construct() {
 		$this->validator = new BSP_Discount_Rule_Validator();
 		$this->terms     = new BSP_Discount_Rule_Terms();
+		$this->activation = new BSP_Rule_Activation();
+		$this->deactivation = new BSP_Rule_Deactivation();
+		$this->synchronizer = new BSP_Product_Synchronizer();
 	}
 
 	/**
@@ -60,6 +84,7 @@ class BSP_Discount_Rule_Admin {
 		add_action( 'admin_post_bsp_create_rule', array( $this, 'handle_create' ) );
 		add_action( 'admin_post_bsp_update_rule', array( $this, 'handle_update' ) );
 		add_action( 'admin_post_bsp_activate_rule', array( $this, 'handle_activate' ) );
+		add_action( 'admin_post_bsp_confirm_activate_rule', array( $this, 'handle_confirm_activate' ) );
 		add_action( 'admin_post_bsp_deactivate_rule', array( $this, 'handle_deactivate' ) );
 		add_action( 'admin_post_bsp_trash_rule', array( $this, 'handle_trash' ) );
 		add_action( 'admin_post_bsp_restore_rule', array( $this, 'handle_restore' ) );
@@ -246,8 +271,13 @@ class BSP_Discount_Rule_Admin {
 			wp_die( esc_html__( 'The requested discount rule could not be found.', 'bulk-sale-pricing' ), '', array( 'response' => 404 ) );
 		}
 
-		if ( isset( $_GET['confirm'] ) && 'delete' === sanitize_key( wp_unslash( $_GET['confirm'] ) ) ) {
+		$confirmation = isset( $_GET['confirm'] ) ? sanitize_key( wp_unslash( $_GET['confirm'] ) ) : '';
+		if ( 'delete' === $confirmation ) {
 			$this->render_delete_confirmation( $rule );
+			return;
+		}
+		if ( 'activate' === $confirmation ) {
+			$this->render_activation_confirmation( $rule );
 			return;
 		}
 		?>
@@ -393,7 +423,17 @@ class BSP_Discount_Rule_Admin {
 		update_post_meta( $rule_id, '_bsp_discount_percentage', (string) $percentage );
 		update_post_meta( $rule_id, '_bsp_category_terms', $categories );
 		update_post_meta( $rule_id, '_bsp_tag_terms', $tags );
-		update_post_meta( $rule_id, '_bsp_active', '1' === $this->post_value( 'bsp_activate' ) ? '1' : '0' );
+		update_post_meta( $rule_id, '_bsp_category_term_ids', $this->term_ids( $categories ) );
+		update_post_meta( $rule_id, '_bsp_tag_term_ids', $this->term_ids( $tags ) );
+		update_post_meta( $rule_id, '_bsp_active', '0' );
+
+		if ( '1' === $this->post_value( 'bsp_activate' ) ) {
+			$rule = $this->get_rule( $rule_id );
+			if ( ! $rule ) {
+				$this->redirect_with_notice( self::CREATE_PAGE_SLUG, 'save-failed' );
+			}
+			$this->redirect_after_activation( $rule, $this->activation->activate( $rule ) );
+		}
 
 		$this->redirect_with_notice( self::PAGE_SLUG, 'created' );
 	}
@@ -412,6 +452,7 @@ class BSP_Discount_Rule_Admin {
 			$this->redirect_with_notice( self::PAGE_SLUG, 'invalid-action' );
 		}
 
+		$was_active = '1' === get_post_meta( $rule->ID, '_bsp_active', true );
 		$name       = $this->validator->rule_name( $this->post_value( 'bsp_rule_name' ) );
 		$percentage = $this->validator->percentage( $this->post_value( 'bsp_percentage' ) );
 		if ( is_wp_error( $name ) || is_wp_error( $percentage ) ) {
@@ -430,6 +471,9 @@ class BSP_Discount_Rule_Admin {
 		}
 
 		update_post_meta( $rule->ID, '_bsp_discount_percentage', (string) $percentage );
+		if ( $was_active ) {
+			$this->synchronizer->synchronize_rule( $rule );
+		}
 		$this->redirect_with_notice( self::PAGE_SLUG, 'updated' );
 	}
 
@@ -439,8 +483,18 @@ class BSP_Discount_Rule_Admin {
 		if ( 'publish' !== $rule->post_status || '1' === get_post_meta( $rule->ID, '_bsp_active', true ) ) {
 			$this->redirect_with_notice( self::PAGE_SLUG, 'invalid-action' );
 		}
-		update_post_meta( $rule->ID, '_bsp_active', '1' );
-		$this->redirect_with_notice( self::PAGE_SLUG, 'activated' );
+
+		$this->redirect_after_activation( $rule, $this->activation->activate( $rule ) );
+	}
+
+	/** Handles confirmed activation. @return void */
+	public function handle_confirm_activate() {
+		$rule = $this->rule_for_action( 'confirm_activate' );
+		if ( 'publish' !== $rule->post_status || '1' === get_post_meta( $rule->ID, '_bsp_active', true ) ) {
+			$this->redirect_with_notice( self::PAGE_SLUG, 'invalid-action' );
+		}
+
+		$this->redirect_after_activation( $rule, $this->activation->activate( $rule, true ) );
 	}
 
 	/** Handles deactivation. @return void */
@@ -449,8 +503,16 @@ class BSP_Discount_Rule_Admin {
 		if ( 'publish' !== $rule->post_status || '1' !== get_post_meta( $rule->ID, '_bsp_active', true ) ) {
 			$this->redirect_with_notice( self::PAGE_SLUG, 'invalid-action' );
 		}
+
 		update_post_meta( $rule->ID, '_bsp_active', '0' );
-		$this->redirect_with_notice( self::PAGE_SLUG, 'deactivated' );
+		BSP_Active_Discount_Rules::reset();
+
+		$result = $this->deactivation->cleanup( $rule->ID );
+		if ( ! empty( $result['failed'] ) ) {
+			$this->redirect_with_notice( self::PAGE_SLUG, 'deactivation-failed', array( 'bsp_failed' => implode( ',', $result['failed'] ) ) );
+		}
+
+		$this->redirect_with_notice( self::PAGE_SLUG, 'deactivated', array( 'bsp_cleared' => count( $result['cleared'] ) ) );
 	}
 
 	/** Handles moving an inactive rule to trash. @return void */
@@ -487,7 +549,9 @@ class BSP_Discount_Rule_Admin {
 		if ( 'trash' !== $rule->post_status || '1' !== $this->post_value( 'bsp_confirm_delete' ) ) {
 			$this->redirect_with_notice( self::PAGE_SLUG, 'invalid-action' );
 		}
-		wp_delete_post( $rule->ID, true );
+		if ( false === wp_delete_post( $rule->ID, true ) ) {
+			$this->redirect_with_notice( self::PAGE_SLUG, 'save-failed', array( 'view' => 'trash' ) );
+		}
 		$this->redirect_with_notice( self::PAGE_SLUG, 'deleted' );
 	}
 
@@ -762,6 +826,43 @@ class BSP_Discount_Rule_Admin {
 	}
 
 	/**
+	 * Renders the explicit existing-sale-price overwrite confirmation.
+	 *
+	 * @param WP_Post $rule Rule being activated.
+	 * @return void
+	 */
+	private function render_activation_confirmation( $rule ) {
+		if ( 'publish' !== $rule->post_status || '1' === get_post_meta( $rule->ID, '_bsp_active', true ) ) {
+			$this->redirect_with_notice( self::PAGE_SLUG, 'invalid-action' );
+		}
+
+		$prepared = $this->activation->prepare( $rule );
+		if ( 'conflict' === $prepared['status'] ) {
+			$this->redirect_with_notice( self::PAGE_SLUG, 'activation-conflict', array( 'bsp_conflicts' => implode( ',', $prepared['conflicts'] ) ) );
+		}
+
+		if ( empty( $prepared['existing_sale_prices'] ) ) {
+			$this->redirect_after_activation( $rule, $this->activation->activate( $rule ) );
+		}
+		?>
+		<div class="wrap bsp-rule-form-wrap">
+			<h1><?php esc_html_e( 'Confirm Sale Price Overwrite', 'bulk-sale-pricing' ); ?></h1>
+			<p><?php esc_html_e( 'Activating this rule will overwrite the existing Sale Prices listed below.', 'bulk-sale-pricing' ); ?></p>
+			<p><?php esc_html_e( 'Bulk Sale Pricing will not store the previous Sale Prices, and it cannot restore them later.', 'bulk-sale-pricing' ); ?></p>
+			<p><?php esc_html_e( 'Cancelling leaves this rule inactive and does not change any prices.', 'bulk-sale-pricing' ); ?></p>
+			<?php $this->render_product_list( $prepared['existing_sale_prices'] ); ?>
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+				<input type="hidden" name="action" value="bsp_confirm_activate_rule" />
+				<input type="hidden" name="rule_id" value="<?php echo esc_attr( $rule->ID ); ?>" />
+				<?php wp_nonce_field( 'bsp_confirm_activate_rule_' . $rule->ID ); ?>
+				<?php submit_button( __( 'Overwrite Sale Prices and Activate Rule', 'bulk-sale-pricing' ), 'primary', 'submit', false ); ?>
+				<a class="button" href="<?php echo esc_url( $this->page_url( self::PAGE_SLUG ) ); ?>"><?php esc_html_e( 'Cancel', 'bulk-sale-pricing' ); ?></a>
+			</form>
+		</div>
+		<?php
+	}
+
+	/**
 	 * Renders empty-trash confirmation.
 	 *
 	 * @return void
@@ -872,6 +973,26 @@ class BSP_Discount_Rule_Admin {
 	}
 
 	/**
+	 * Extracts canonical term IDs from validated term snapshots for persistence.
+	 *
+	 * Snapshots remain display-only data after creation.
+	 *
+	 * @param array<int, array{term_id:int,name:string}> $terms Validated term snapshots.
+	 * @return int[]
+	 */
+	private function term_ids( $terms ) {
+		$term_ids = array();
+
+		foreach ( $terms as $term ) {
+			if ( isset( $term['term_id'] ) && is_int( $term['term_id'] ) && $term['term_id'] > 0 ) {
+				$term_ids[] = $term['term_id'];
+			}
+		}
+
+		return $term_ids;
+	}
+
+	/**
 	 * Gets a human-readable status.
 	 *
 	 * @param WP_Post $rule Rule post.
@@ -899,6 +1020,33 @@ class BSP_Discount_Rule_Admin {
 	}
 
 	/**
+	 * Redirects after a completed or blocked activation attempt.
+	 *
+	 * @param WP_Post                         $rule Rule being activated.
+	 * @param array<string, string|int[]> $result Activation result.
+	 * @return never
+	 */
+	private function redirect_after_activation( $rule, $result ) {
+		if ( 'confirmation' === $result['status'] ) {
+			wp_safe_redirect( $this->page_url( self::EDIT_PAGE_SLUG, array( 'rule_id' => $rule->ID, 'confirm' => 'activate' ) ) );
+			exit;
+		}
+
+		if ( 'conflict' === $result['status'] ) {
+			$this->redirect_with_notice( self::PAGE_SLUG, 'activation-conflict', array( 'bsp_conflicts' => implode( ',', $result['conflicts'] ) ) );
+		}
+
+		$this->redirect_with_notice(
+			self::PAGE_SLUG,
+			'activated',
+			array(
+				'bsp_updated' => count( $result['updated'] ),
+				'bsp_skipped' => implode( ',', $result['skipped'] ),
+			)
+		);
+	}
+
+	/**
 	 * Builds a plugin admin-page URL.
 	 *
 	 * @param string               $page Page slug.
@@ -920,7 +1068,9 @@ class BSP_Discount_Rule_Admin {
 			'created'       => array( 'success', __( 'Discount rule created.', 'bulk-sale-pricing' ) ),
 			'updated'       => array( 'success', __( 'Discount rule updated.', 'bulk-sale-pricing' ) ),
 			'activated'     => array( 'success', __( 'Discount rule activated.', 'bulk-sale-pricing' ) ),
+			'activation-conflict' => array( 'error', __( 'The rule could not be activated because it conflicts with an active rule.', 'bulk-sale-pricing' ) ),
 			'deactivated'   => array( 'success', __( 'Discount rule deactivated.', 'bulk-sale-pricing' ) ),
+			'deactivation-failed' => array( 'error', __( 'The rule was deactivated, but BSP Sale Price cleanup failed for one or more items.', 'bulk-sale-pricing' ) ),
 			'trashed'       => array( 'success', __( 'Discount rule moved to Trash.', 'bulk-sale-pricing' ) ),
 			'restored'      => array( 'success', __( 'Discount rule restored as inactive. Activate it manually if needed.', 'bulk-sale-pricing' ) ),
 			'deleted'       => array( 'success', __( 'Discount rule deleted permanently.', 'bulk-sale-pricing' ) ),
@@ -935,7 +1085,88 @@ class BSP_Discount_Rule_Admin {
 			return;
 		}
 
+		if ( 'activated' === $notice ) {
+			$updated = isset( $_GET['bsp_updated'] ) ? absint( wp_unslash( $_GET['bsp_updated'] ) ) : 0;
+			printf( '<div class="notice notice-success is-dismissible"><p>%s</p><p>%s</p>', esc_html__( 'Discount rule activated successfully.', 'bulk-sale-pricing' ), esc_html( sprintf( _n( 'Discount applied to %d product or variation.', 'Discount applied to %d products or variations.', $updated, 'bulk-sale-pricing' ), $updated ) ) );
+			$skipped = $this->query_product_ids( 'bsp_skipped' );
+			if ( ! empty( $skipped ) ) {
+				echo '<p>' . esc_html( sprintf( _n( '%d item was skipped because it does not have a valid Regular Price:', '%d items were skipped because they do not have a valid Regular Price:', count( $skipped ), 'bulk-sale-pricing' ), count( $skipped ) ) ) . '</p>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+				$this->render_product_list( $skipped );
+			}
+			echo '</div>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+			return;
+		}
+
+		if ( 'activation-conflict' === $notice ) {
+			echo '<div class="notice notice-error is-dismissible"><p>' . esc_html__( 'The rule remains inactive because it overlaps these active discount rules:', 'bulk-sale-pricing' ) . '</p>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+			$this->render_rule_list( $this->query_product_ids( 'bsp_conflicts' ) );
+			echo '</div>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+			return;
+		}
+
+		if ( 'deactivated' === $notice ) {
+			$cleared = isset( $_GET['bsp_cleared'] ) ? absint( wp_unslash( $_GET['bsp_cleared'] ) ) : 0;
+			printf( '<div class="notice notice-success is-dismissible"><p>%s</p><p>%s</p></div>', esc_html__( 'Discount rule deactivated.', 'bulk-sale-pricing' ), esc_html( sprintf( _n( 'Cleared BSP sale pricing from %d product or variation.', 'Cleared BSP sale pricing from %d products or variations.', $cleared, 'bulk-sale-pricing' ), $cleared ) ) );
+			return;
+		}
+
+		if ( 'deactivation-failed' === $notice ) {
+			echo '<div class="notice notice-error is-dismissible"><p>' . esc_html__( 'The rule was deactivated, but BSP Sale Price cleanup failed for the following items:', 'bulk-sale-pricing' ) . '</p>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+			$this->render_product_list( $this->query_product_ids( 'bsp_failed' ) );
+			echo '</div>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+			return;
+		}
+
 		printf( '<div class="notice notice-%1$s is-dismissible"><p>%2$s</p></div>', esc_attr( $notices[ $notice ][0] ), esc_html( $notices[ $notice ][1] ) );
+	}
+
+	/**
+	 * Gets comma-separated positive IDs from the query string.
+	 *
+	 * @param string $key Query argument key.
+	 * @return int[]
+	 */
+	private function query_product_ids( $key ) {
+		$value = isset( $_GET[ $key ] ) ? sanitize_text_field( wp_unslash( $_GET[ $key ] ) ) : '';
+		$ids   = array_filter( array_map( 'absint', explode( ',', $value ) ) );
+		return array_values( array_unique( $ids ) );
+	}
+
+	/**
+	 * Renders a concise list of product or variation names.
+	 *
+	 * @param int[] $product_ids Product or variation IDs.
+	 * @return void
+	 */
+	private function render_product_list( $product_ids ) {
+		if ( empty( $product_ids ) ) {
+			return;
+		}
+		echo '<ul>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+		foreach ( $product_ids as $product_id ) {
+			$product = wc_get_product( $product_id );
+			if ( $product instanceof WC_Product ) {
+				echo '<li>' . esc_html( wp_strip_all_tags( $product->get_formatted_name() ) ) . '</li>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+			}
+		}
+		echo '</ul>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+	}
+
+	/**
+	 * Renders conflicting active rule names.
+	 *
+	 * @param int[] $rule_ids Rule IDs.
+	 * @return void
+	 */
+	private function render_rule_list( $rule_ids ) {
+		echo '<ul>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+		foreach ( $rule_ids as $rule_id ) {
+			$rule = $this->get_rule( $rule_id );
+			if ( $rule && 'publish' === $rule->post_status && '1' === get_post_meta( $rule->ID, '_bsp_active', true ) ) {
+				echo '<li>' . esc_html( $rule->post_title ) . '</li>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+			}
+		}
+		echo '</ul>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
 	}
 
 	/** Ensures a user can manage rules. @return void */

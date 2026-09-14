@@ -23,6 +23,15 @@ define( 'BSP_URL', plugin_dir_url( __FILE__ ) );
 require_once BSP_PATH . 'includes/class-bsp-discount-rule-post-type.php';
 require_once BSP_PATH . 'includes/class-bsp-discount-rule-validator.php';
 require_once BSP_PATH . 'includes/class-bsp-discount-rule-terms.php';
+require_once BSP_PATH . 'includes/class-bsp-discount-rule-migration.php';
+require_once BSP_PATH . 'includes/class-bsp-active-discount-rules.php';
+require_once BSP_PATH . 'includes/class-bsp-product-matcher.php';
+require_once BSP_PATH . 'includes/class-bsp-product-history.php';
+require_once BSP_PATH . 'includes/class-bsp-discount-applicator.php';
+require_once BSP_PATH . 'includes/class-bsp-product-targets.php';
+require_once BSP_PATH . 'includes/class-bsp-rule-activation.php';
+require_once BSP_PATH . 'includes/class-bsp-rule-deactivation.php';
+require_once BSP_PATH . 'includes/class-bsp-product-synchronizer.php';
 require_once BSP_PATH . 'includes/class-bsp-discount-rule-admin.php';
 require_once BSP_PATH . 'includes/class-bsp-plugin.php';
 
