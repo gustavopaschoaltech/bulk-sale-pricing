@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       Bulk Sale Pricing
  * Description:       Quickly change sale prices for groups of WooCommerce products.
- * Version:           0.1.0
+ * Version:           0.2.0
  * Requires at least: 6.9
  * Requires PHP:      8.1
  * Requires Plugins:  woocommerce
@@ -15,7 +15,7 @@
 
 defined( 'ABSPATH' ) || exit;
 
-define( 'BSP_VERSION', '0.1.0' );
+define( 'BSP_VERSION', '0.2.0' );
 define( 'BSP_FILE', __FILE__ );
 define( 'BSP_PATH', plugin_dir_path( __FILE__ ) );
 define( 'BSP_URL', plugin_dir_url( __FILE__ ) );
